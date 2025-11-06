@@ -1,0 +1,177 @@
+version: "3"
+
+env:
+  BORDER: double
+  BORDER_FOREGROUND: "212"
+  PADDING: "1 1"
+  MARGIN: "1 1"
+
+tasks:
+  check-cluster:
+    desc: "Quick cluster health and resource check"
+    cmds:
+      - cmd: |
+          gum style "🔍 Checking cluster connectivity and basic health..."
+        silent: true
+      - kubectl cluster-info
+      - kubectl get nodes
+      - cmd: |
+          if kubectl top nodes &>/dev/null; then
+            echo "📊 Node resource usage:"
+            kubectl top nodes
+          else
+            echo "⚠️  Metrics server not available - install with: kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
+          fi
+
+  resource-usage:
+    desc: "Show detailed resource usage across the cluster"
+    cmds:
+      - cmd: |
+          gum style "📊 Detailed Resource Usage Report"
+        silent: true
+      - cmd: |
+          echo "=== Node Resource Usage ==="
+          kubectl top nodes 2>/dev/null || echo "Metrics server not available"
+        
+      - cmd: |
+          echo "=== Top 10 CPU Consuming Pods ==="
+          kubectl top pods --all-namespaces --sort-by=cpu 2>/dev/null | head -11 || echo "Metrics server not available"
+        
+      - cmd: |
+          echo "=== Top 10 Memory Consuming Pods ==="
+          kubectl top pods --all-namespaces --sort-by=memory 2>/dev/null | head -11 || echo "Metrics server not available"
+
+  node-details:
+    desc: "Show detailed node information including capacity and allocation"
+    cmds:
+      - cmd: |
+          gum style "🖥️  Node Details and Resource Allocation"
+        silent: true
+      - cmd: |
+          echo "=== Node Capacity and Allocatable Resources ==="
+          kubectl get nodes -o custom-columns="NAME:.metadata.name,STATUS:.status.conditions[?(@.type=='Ready')].status,CPU_CAPACITY:.status.capacity.cpu,MEMORY_CAPACITY:.status.capacity.memory,CPU_ALLOCATABLE:.status.allocatable.cpu,MEMORY_ALLOCATABLE:.status.allocatable.memory"
+        
+      - cmd: |
+          echo "=== Node Resource Allocation Summary ==="
+          kubectl describe nodes | grep -A 5 "Allocated resources" | grep -E "(Node:|Allocated resources|cpu|memory|ephemeral-storage)"
+
+  pod-resources:
+    desc: "Analyze pod resource requests, limits and usage"
+    cmds:
+      - cmd: |
+          gum style "🐳 Pod Resource Analysis"
+        silent: true
+      - cmd: |
+          echo "=== Pods with Resource Requests and Limits ==="
+          kubectl get pods -o=custom-columns="NAME:.metadata.name,NAMESPACE:.metadata.namespace,CPU_REQUEST:.spec.containers[*].resources.requests.cpu,MEMORY_REQUEST:.spec.containers[*].resources.requests.memory,CPU_LIMIT:.spec.containers[*].resources.limits.cpu,MEMORY_LIMIT:.spec.containers[*].resources.limits.memory" --all-namespaces | head -20
+        
+      - cmd: |
+          echo "=== Pods without Resource Limits (Security Risk) ==="
+          kubectl get pods --all-namespaces -o=jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.containers[*].resources.limits}{"\n"}{end}' | grep -v 'cpu\|memory' | head -10
+
+  check-pressure:
+    desc: "Check for resource pressure on nodes"
+    cmds:
+      - cmd: |
+          gum style "⚠️  Node Resource Pressure Check"
+        silent: true
+      - cmd: |
+          echo "=== Node Conditions ==="
+          kubectl get nodes -o custom-columns="NAME:.metadata.name,READY:.status.conditions[?(@.type=='Ready')].status,MEMORY_PRESSURE:.status.conditions[?(@.type=='MemoryPressure')].status,DISK_PRESSURE:.status.conditions[?(@.type=='DiskPressure')].status,PID_PRESSURE:.status.conditions[?(@.type=='PIDPressure')].status"
+        
+      - cmd: |
+          echo "=== Recent Resource-Related Events ==="
+          kubectl get events --all-namespaces --field-selector reason=FailedScheduling --sort-by='.lastTimestamp' | tail -10
+          kubectl get events --all-namespaces --field-selector reason=Evicted --sort-by='.lastTimestamp' | tail -5
+
+  namespaces:
+    desc: "Show resource usage and quotas by namespace"
+    cmds:
+      - cmd: |
+          gum style "📦 Namespace Resource Overview"
+        silent: true
+      - cmd: |
+          echo "=== Resource Quotas by Namespace ==="
+          kubectl get resourcequotas --all-namespaces
+        
+      - cmd: |
+          echo "=== Limit Ranges by Namespace ==="
+          kubectl get limitranges --all-namespaces
+        
+      - cmd: |
+          if kubectl top pods --all-namespaces &>/dev/null; then
+            echo "=== Resource Usage by Namespace ==="
+            kubectl top pods --all-namespaces | awk 'NR==1{print; next} {namespace[$1]+=$3; memory[$1]+=$4} END {for (ns in namespace) printf "%-20s %10s %10s\n", ns, namespace[ns]"m", memory[ns]"Mi"}' | sort -k2 -nr
+          fi
+
+  install-metrics-server:
+    desc: "Install metrics server for resource monitoring"
+    cmds:
+      - cmd: |
+          gum style "📊 Installing Metrics Server"
+        silent: true
+      - kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+      - cmd: |
+          echo "For kind clusters, you may need to patch metrics-server:"
+          echo "kubectl patch deployment metrics-server -n kube-system --type='json' -p='[{\"op\": \"add\", \"path\": \"/spec/template/spec/containers/0/args/-\", \"value\": \"--kubelet-insecure-tls\"}]'"
+
+  install-k9s:
+    desc: "Install k9s terminal dashboard for interactive monitoring"
+    cmds:
+      - cmd: |
+          gum style "📊 Installing k9s Terminal Dashboard"
+        silent: true
+      - cmd: |
+          if command -v k9s &> /dev/null; then
+            echo "k9s is already installed"
+            k9s version
+          else
+            echo "Installing k9s..."
+            curl -sL https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz | tar xz -C /tmp
+            sudo mv /tmp/k9s /usr/local/bin/
+            echo "k9s installed successfully!"
+            echo "Run 'k9s' to start the interactive dashboard"
+          fi
+
+  monitor-live:
+    desc: "Start live resource monitoring (requires scripts/resource-monitor.sh)"
+    cmds:
+      - cmd: |
+          if [ -f "./scripts/resource-monitor.sh" ]; then
+            chmod +x ./scripts/resource-monitor.sh
+            ./scripts/resource-monitor.sh
+          else
+            echo "Resource monitor script not found. Creating it now..."
+          fi
+
+  health-check:
+    desc: "Comprehensive cluster health check (requires scripts/cluster-health-check.sh)"
+    cmds:
+      - cmd: |
+          if [ -f "./scripts/cluster-health-check.sh" ]; then
+            chmod +x ./scripts/cluster-health-check.sh
+            ./scripts/cluster-health-check.sh
+          else
+            echo "Health check script not found. Please create it first."
+          fi
+
+  quick-stats:
+    desc: "Show quick cluster statistics"
+    cmds:
+      - cmd: |
+          gum style "⚡ Quick Cluster Statistics"
+        silent: true
+      - cmd: |
+          echo "=== Cluster Overview ==="
+          echo "Nodes: $(kubectl get nodes --no-headers | wc -l)"
+          echo "Namespaces: $(kubectl get namespaces --no-headers | wc -l)"
+          echo "Pods (all): $(kubectl get pods --all-namespaces --no-headers | wc -l)"
+          echo "Running Pods: $(kubectl get pods --all-namespaces --no-headers | grep Running | wc -l)"
+          echo "Services: $(kubectl get services --all-namespaces --no-headers | wc -l)"
+          echo "Deployments: $(kubectl get deployments --all-namespaces --no-headers | wc -l)"
+        
+      - cmd: |
+          if kubectl top nodes &>/dev/null; then
+            echo "=== Quick Resource Summary ==="
+            kubectl top nodes --no-headers | awk '{cpu_total+=$2; mem_total+=$4} END {print "Total CPU Usage: " cpu_total "m"; print "Total Memory Usage: " mem_total "Mi"}'
+          fi
